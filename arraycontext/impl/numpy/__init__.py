@@ -32,7 +32,7 @@ THE SOFTWARE.
 
 from typing import Dict
 
-import numpy as np
+import cupy as np
 
 import loopy as lp
 
@@ -72,11 +72,11 @@ class NumpyArrayContext(ArrayContext):
 
     def from_numpy(self, np_array):
         # Uh oh...
-        return np_array
+        return np.array(np_array)
 
     def to_numpy(self, array):
         # Uh oh...
-        return array
+        return np.asnumpy(array)
 
     def call_loopy(self, t_unit, **kwargs):
         t_unit = t_unit.copy(target=lp.ExecutableCTarget())
@@ -94,13 +94,13 @@ class NumpyArrayContext(ArrayContext):
 
     def freeze(self, array):
         def _freeze(ary):
-            return ary
+            return np.asnumpy(ary)
 
         return with_array_context(rec_map_array_container(_freeze, array), actx=None)
 
     def thaw(self, array):
         def _thaw(ary):
-            return ary
+            return np.array(ary)
 
         return with_array_context(rec_map_array_container(_thaw, array), actx=self)
 

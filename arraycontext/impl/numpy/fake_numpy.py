@@ -23,7 +23,7 @@ THE SOFTWARE.
 """
 from functools import partial, reduce
 
-import numpy as np
+import cupy as np
 
 from arraycontext.container import is_array_container
 from arraycontext.container.traversal import (
@@ -78,7 +78,7 @@ class NumpyFakeNumpyNamespace(BaseFakeNumpyNamespace):
 
     def stack(self, arrays, axis=0):
         return rec_multimap_array_container(
-                lambda *args: np.stack(arrays=args, axis=axis),
+                lambda *args: np.stack(args, axis=axis),
                 *arrays)
 
     def broadcast_to(self, array, shape):
