@@ -949,8 +949,9 @@ def test_container_arithmetic(actx_factory):
     with pytest.raises(TypeError):
         ary_of_dofs + dc_of_dofs
 
-    with pytest.raises(TypeError):
-        dc_of_dofs + ary_of_dofs
+    if not isinstance(actx, NumpyArrayContext):
+        with pytest.raises(TypeError):
+            dc_of_dofs + ary_of_dofs
 
     with pytest.raises(TypeError):
         ary_dof + dc_of_dofs
@@ -1152,7 +1153,12 @@ def test_flatten_with_leaf_class(actx_factory):
 # {{{ test from_numpy and to_numpy
 
 def test_numpy_conversion(actx_factory):
+    from arraycontext import NumpyArrayContext
+
     actx = actx_factory()
+    if isinstance(actx, NumpyArrayContext):
+        pytest.skip("Irrelevant tests for NumpyArrayContext")
+
     rng = np.random.default_rng()
 
     nelements = 42
