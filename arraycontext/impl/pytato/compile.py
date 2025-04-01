@@ -529,8 +529,7 @@ class LazilyJAXCompilingFunctionCaller(BaseLazilyCompilingFunctionCaller):
         return pytato_program, name_in_program_to_tags, name_in_program_to_axes
 
 
-def _args_to_device_buffers(actx, input_id_to_name_in_program, arg_id_to_arg,
-                            fn_name="<unknown>"):
+def _args_to_device_buffers(actx, input_id_to_name_in_program, arg_id_to_arg):
     input_kwargs_for_loopy = {}
 
     for arg_id, arg in arg_id_to_arg.items():
@@ -551,19 +550,31 @@ def _args_to_device_buffers(actx, input_id_to_name_in_program, arg_id_to_arg,
             # got a frozen array  => do nothing
             pass
         elif isinstance(arg, pt.Array):
-            # got an array expression => abort
-            raise ValueError(
-                f"Argument '{arg_id}' to the '{fn_name}' compiled function is a"
-                " pytato array expression. Evaluating it just-in-time"
-                " potentially causes a significant overhead on each call to the"
-                " function and is therefore unsupported. "
-            )
+            # got an array expression => evaluate it
+            from warnings import warn
+            warn(f"Argument array '{arg_id}' to a compiled function is "
+                    "unevaluated. Evaluating just-in-time, at "
+                    "considerable expense. This is deprecated and will stop "
+                    "working in 2023. To avoid this warning, force evaluation "
+                    "of all arguments via freeze/thaw.",
+                    DeprecationWarning, stacklevel=4)
+
+            arg = actx.freeze(arg)
         else:
             raise NotImplementedError(type(arg))
 
         input_kwargs_for_loopy[input_id_to_name_in_program[arg_id]] = arg
 
     return input_kwargs_for_loopy
+
+
+def _args_to_cl_buffers(actx, input_id_to_name_in_program, arg_id_to_arg):
+    from warnings import warn
+    warn("_args_to_cl_buffer has been renamed to"
+         " _args_to_device_buffers. This will be"
+         " an error in 2023.", DeprecationWarning, stacklevel=2)
+    return _args_to_device_buffers(actx, input_id_to_name_in_program,
+                                   arg_id_to_arg)
 
 # }}}
 
@@ -620,7 +631,7 @@ class CompiledPyOpenCLFunctionReturningArrayContainer(CompiledFunction):
        type of the callable.
     """
     actx: PytatoPyOpenCLArrayContext
-    pytato_program: pt.target.loopy.BoundPyOpenCLExecutable
+    pytato_program: pt.target.BoundProgram
     input_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     output_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     name_in_program_to_tags: Mapping[str, frozenset[Tag]]
@@ -631,10 +642,8 @@ class CompiledPyOpenCLFunctionReturningArrayContainer(CompiledFunction):
         from .utils import get_cl_axes_from_pt_axes
         from arraycontext.impl.pyopencl.taggable_cl_array import to_tagged_cl_array
 
-        fn_name = self.pytato_program.program.entrypoint
-
         input_kwargs_for_loopy = _args_to_device_buffers(
-                self.actx, self.input_id_to_name_in_program, arg_id_to_arg, fn_name)
+                self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
 
         evt, out_dict = self.pytato_program(queue=self.actx.queue,
                                             allocator=self.actx.allocator,
@@ -665,7 +674,7 @@ class CompiledPyOpenCLFunctionReturningArray(CompiledFunction):
         Name of the output array in the program.
     """
     actx: PytatoPyOpenCLArrayContext
-    pytato_program: pt.target.loopy.BoundPyOpenCLExecutable
+    pytato_program: pt.target.BoundProgram
     input_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     output_tags: frozenset[Tag]
     output_axes: tuple[pt.Axis, ...]
@@ -675,10 +684,8 @@ class CompiledPyOpenCLFunctionReturningArray(CompiledFunction):
         from .utils import get_cl_axes_from_pt_axes
         from arraycontext.impl.pyopencl.taggable_cl_array import to_tagged_cl_array
 
-        fn_name = self.pytato_program.program.entrypoint
-
         input_kwargs_for_loopy = _args_to_device_buffers(
-                self.actx, self.input_id_to_name_in_program, arg_id_to_arg, fn_name)
+                self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
 
         evt, out_dict = self.pytato_program(queue=self.actx.queue,
                                             allocator=self.actx.allocator,
@@ -716,7 +723,7 @@ class CompiledJAXFunctionReturningArrayContainer(CompiledFunction):
        type of the callable.
     """
     actx: PytatoJAXArrayContext
-    pytato_program: pt.target.python.BoundJAXPythonProgram
+    pytato_program: pt.target.BoundProgram
     input_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     output_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     name_in_program_to_tags: Mapping[str, frozenset[Tag]]
@@ -724,10 +731,8 @@ class CompiledJAXFunctionReturningArrayContainer(CompiledFunction):
     output_template: ArrayContainer
 
     def __call__(self, arg_id_to_arg) -> ArrayContainer:
-        fn_name = self.pytato_program.entrypoint
-
         input_kwargs_for_loopy = _args_to_device_buffers(
-                self.actx, self.input_id_to_name_in_program, arg_id_to_arg, fn_name)
+                self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
 
         out_dict = self.pytato_program(**input_kwargs_for_loopy)
 
@@ -749,17 +754,15 @@ class CompiledJAXFunctionReturningArray(CompiledFunction):
         Name of the output array in the program.
     """
     actx: PytatoJAXArrayContext
-    pytato_program: pt.target.python.BoundJAXPythonProgram
+    pytato_program: pt.target.BoundProgram
     input_id_to_name_in_program: Mapping[tuple[Hashable, ...], str]
     output_tags: frozenset[Tag]
     output_axes: tuple[pt.Axis, ...]
     output_name: str
 
     def __call__(self, arg_id_to_arg) -> ArrayContainer:
-        fn_name = self.pytato_program.entrypoint
-
         input_kwargs_for_loopy = _args_to_device_buffers(
-                self.actx, self.input_id_to_name_in_program, arg_id_to_arg, fn_name)
+                self.actx, self.input_id_to_name_in_program, arg_id_to_arg)
 
         _evt, out_dict = self.pytato_program(**input_kwargs_for_loopy)
 

@@ -1149,6 +1149,7 @@ def test_actx_compile_kwargs(actx_factory):
 def test_actx_compile_with_tuple_output_keys(actx_factory):
     # arraycontext.git<=3c9aee68 would fail due to a bug in output
     # key stringification logic.
+    from arraycontext import from_numpy, to_numpy
     actx = actx_factory()
     rng = np.random.default_rng()
 
@@ -1162,11 +1163,11 @@ def test_actx_compile_with_tuple_output_keys(actx_factory):
     v_x = rng.uniform(size=10)
     v_y = rng.uniform(size=10)
 
-    vel = actx.from_numpy(Velocity2D(v_x, v_y, actx))
+    vel = from_numpy(Velocity2D(v_x, v_y, actx), actx)
 
     scaled_speed = compiled_rhs(3.14, vel=vel)
 
-    result = actx.to_numpy(scaled_speed)[0, 0]
+    result = to_numpy(scaled_speed, actx)[0, 0]
     np.testing.assert_allclose(result.u, -3.14*v_y)
     np.testing.assert_allclose(result.v, 3.14*v_x)
 
@@ -1292,8 +1293,6 @@ class ArrayContainerWithNumpy:
     u: np.ndarray
     v: DOFArray
 
-    __array_ufunc__ = None
-
 
 def test_array_container_with_numpy(actx_factory):
     actx = actx_factory()
@@ -1412,16 +1411,14 @@ def test_compile_anonymous_function(actx_factory):
 
     # See https://github.com/inducer/grudge/issues/287
     actx = actx_factory()
-
-    ones = actx.thaw(actx.freeze(
-        actx.np.zeros(shape=(10, 4), dtype=np.float64) + 1
-        ))
-
     f = actx.compile(lambda x: 2*x+40)
-    np.testing.assert_allclose(actx.to_numpy(f(ones)), 42)
-
+    np.testing.assert_allclose(
+        actx.to_numpy(f(1+actx.np.zeros((10, 4), "float64"))),
+        42)
     f = actx.compile(partial(lambda x: 2*x+40))
-    np.testing.assert_allclose(actx.to_numpy(f(ones)), 42)
+    np.testing.assert_allclose(
+        actx.to_numpy(f(1+actx.np.zeros((10, 4), "float64"))),
+        42)
 
 
 @pytest.mark.parametrize(
