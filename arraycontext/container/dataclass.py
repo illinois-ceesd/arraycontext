@@ -1,5 +1,3 @@
-# mypy: disallow-untyped-defs
-
 """
 .. currentmodule:: arraycontext
 .. autofunction:: dataclass_array_container
@@ -31,11 +29,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from typing import NamedTuple, Union, get_args, get_origin
+from typing import TYPE_CHECKING, NamedTuple, Union, get_args, get_origin
 
-from arraycontext.container import is_array_container_type
+from arraycontext.container import ArrayContainer, is_array_container_type
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 # {{{ dataclass containers
@@ -96,7 +97,12 @@ def dataclass_array_container(cls: type) -> type:
         #
         # This is not set in stone, but mostly driven by current usage!
 
+        # pyright has no idea what we're up to. :)
+        if field_type is ArrayContainer:  # pyright: ignore[reportUnnecessaryComparison]
+            return True
+
         origin = get_origin(field_type)
+
         # NOTE: `UnionType` is returned when using `Type1 | Type2`
         if origin in (Union, UnionType):
             if all(is_array_type(arg) for arg in get_args(field_type)):

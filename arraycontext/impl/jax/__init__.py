@@ -29,14 +29,29 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from collections.abc import Callable
+
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
-from pytools.tag import ToTagSetConvertible
+from arraycontext.container.traversal import (
+    rec_map_container,
+    with_array_context,
+)
+from arraycontext.context import (
+    Array,
+    ArrayContext,
+    ArrayOrContainerOrScalar,
+    ArrayOrScalar,
+    ScalarLike,
+    is_scalar_like,
+)
 
-from arraycontext.container.traversal import rec_map_array_container, with_array_context
-from arraycontext.context import Array, ArrayContext, ArrayOrContainer, ScalarLike
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pytools.tag import ToTagSetConvertible
 
 
 class EagerJAXArrayContext(ArrayContext):
@@ -63,18 +78,19 @@ class EagerJAXArrayContext(ArrayContext):
         from .fake_numpy import EagerJAXFakeNumpyNamespace
         return EagerJAXFakeNumpyNamespace(self)
 
-    def _rec_map_container(
-            self, func: Callable[[Array], Array], array: ArrayOrContainer,
-            allowed_types: tuple[type, ...] | None = None, *,
-            default_scalar: ScalarLike | None = None,
-            strict: bool = False) -> ArrayOrContainer:
+    def _rec_map_container(self,
+                func: Callable[[Array], Array],
+                array: ArrayOrContainerOrScalar,
+                allowed_types: tuple[type, ...] | None = None, *,
+                default_scalar: ScalarLike | None = None,
+            ) -> ArrayOrContainerOrScalar:
         if allowed_types is None:
             allowed_types = self.array_types
 
-        def _wrapper(ary):
+        def _wrapper(ary: ArrayOrScalar) -> ArrayOrScalar:
             if isinstance(ary, allowed_types):
-                return func(ary)
-            elif np.isscalar(ary):
+                return func(cast("Array", ary))
+            elif is_scalar_like(ary):
                 if default_scalar is None:
                     return ary
                 else:
@@ -85,7 +101,7 @@ class EagerJAXArrayContext(ArrayContext):
                     f"an unsupported array type: got '{type(ary).__name__}', "
                     f"but expected one of {allowed_types}")
 
-        return rec_map_array_container(_wrapper, array)
+        return rec_map_container(_wrapper, array)
 
     # {{{ ArrayContext interface
 

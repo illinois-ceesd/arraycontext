@@ -53,34 +53,47 @@ THE SOFTWARE.
 
 import abc
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from typing_extensions import override
 
 from pytools import memoize_method
 from pytools.tag import Tag, ToTagSetConvertible, normalize_tags
 
-from arraycontext.container.traversal import rec_map_array_container, with_array_context
+from arraycontext.container.traversal import (
+    rec_map_container,
+    with_array_context,
+)
 from arraycontext.context import (
     Array,
     ArrayContext,
-    ArrayOrContainer,
+    ArrayOrContainerOrScalarT,
+    ArrayOrContainerT,
+    ArrayOrScalar,
     ScalarLike,
     UntransformedCodeWarning,
+    is_scalar_like,
 )
 from arraycontext.metadata import NameHint
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+    import jax.numpy as jnp
     import loopy as lp
     import pyopencl as cl
     import pyopencl.array as cl_array
     import pytato
+    import pytato as pt
+    from loopy import TranslationUnit
+
+    from arraycontext.container import SerializationKey
 
 if getattr(sys, "_BUILDING_SPHINX_DOCS", False):
-    import pyopencl as cl
+    pass
 
 import logging
 
@@ -150,7 +163,6 @@ class _BasePytatoArrayContext(ArrayContext, abc.ABC):
         """
         super().__init__()
 
-        import pytato as pt
         self._freeze_prg_cache: dict[pt.DictOfNamedArrays, lp.TranslationUnit] = {}
         self._dag_transform_cache: dict[
                 pt.DictOfNamedArrays,
@@ -168,11 +180,49 @@ class _BasePytatoArrayContext(ArrayContext, abc.ABC):
         from arraycontext.impl.pytato.fake_numpy import PytatoFakeNumpyNamespace
         return PytatoFakeNumpyNamespace(self)
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _frozen_array_types(self) -> tuple[type, ...]:
         """
         Returns valid frozen array types for the array context.
         """
+
+    def _rec_map_container(self,
+               func: Callable[[Array], Array],
+               array: ArrayOrContainerOrScalarT,
+               allowed_types: tuple[type, ...] | None = None, *,
+               default_scalar: ScalarLike | None = None,
+            ) -> ArrayOrContainerOrScalarT:
+        if allowed_types is None:
+            allowed_types = self.array_types
+
+        def _wrapper(ary: ArrayOrScalar) -> ArrayOrScalar:
+            if isinstance(ary, allowed_types):
+                return func(cast("Array", ary))
+            elif is_scalar_like(ary):
+                if default_scalar is None:
+                    return ary
+                else:
+                    return np.array(ary).dtype.type(default_scalar)
+            else:
+                raise TypeError(
+                    f"{type(self).__name__}.{func.__name__[1:]} invoked with "
+                    f"an unsupported array type: got '{type(ary).__name__}', "
+                    f"but expected one of {allowed_types}")
+
+        return cast(
+            "ArrayOrContainerOrScalarT",
+            rec_map_container(_wrapper, array))
+
+    @override
+    def tag_axis(self,
+                 iaxis: int, tags: ToTagSetConvertible,
+                 array: ArrayOrContainerOrScalarT) -> ArrayOrContainerOrScalarT:
+        def _tag_axis(ary: ArrayOrScalar) -> ArrayOrScalar:
+            return cast("pt.Array", ary).with_tagged_axis(iaxis, tags)
+
+        return cast("ArrayOrContainerOrScalarT",
+                    rec_map_container(_tag_axis, array))
 
     # {{{ compilation
 
@@ -206,10 +256,6 @@ class _BasePytatoArrayContext(ArrayContext, abc.ABC):
                 UntransformedCodeWarning, stacklevel=2)
 
         return t_unit
-
-    @abc.abstractmethod
-    def einsum(self, spec, *args, arg_names=None, tagged=()):
-        pass
 
     # }}}
 
@@ -402,34 +448,6 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
         import pyopencl.array as cla
         return (cla.Array,)
 
-    def _rec_map_container(
-            self, func: Callable[[Array], Array], array: ArrayOrContainer,
-            allowed_types: tuple[type, ...] | None = None, *,
-            default_scalar: ScalarLike | None = None,
-            strict: bool = False) -> ArrayOrContainer:
-        import pytato as pt
-
-        import arraycontext.impl.pyopencl.taggable_cl_array as tga
-
-        if allowed_types is None:
-            allowed_types = (pt.Array, tga.TaggableCLArray)
-
-        def _wrapper(ary):
-            if isinstance(ary, allowed_types):
-                return func(ary)
-            elif np.isscalar(ary):
-                if default_scalar is None:
-                    return ary
-                else:
-                    return np.array(ary).dtype.type(default_scalar)
-            else:
-                raise TypeError(
-                    f"{func.__qualname__} invoked with "
-                    f"an unsupported array type: got '{type(ary).__name__}', "
-                    f"but expected one of {allowed_types}")
-
-        return rec_map_array_container(_wrapper, array)
-
     # {{{ ArrayContext interface
 
     def from_numpy(self, array):
@@ -443,7 +461,7 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
                 )
 
         return with_array_context(
-            self._rec_map_container(_from_numpy, array, (np.ndarray,), strict=True),
+            self._rec_map_container(_from_numpy, array, (np.ndarray,)),
             actx=self)
 
     def to_numpy(self, array):
@@ -502,7 +520,8 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
         else:
             return super().get_target()
 
-    def freeze(self, array):
+    @override
+    def freeze(self, array: ArrayOrContainerOrScalarT) -> ArrayOrContainerOrScalarT:
         if np.isscalar(array):
             return array
 
@@ -525,10 +544,13 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
         key_to_pt_arrays: dict[str, pt.Array] = {}
 
         def _record_leaf_ary_in_dict(
-                key: tuple[Any, ...],
-                ary: cla.Array | TaggableCLArray | pt.Array) -> None:
+                key: tuple[SerializationKey, ...],
+                ary: ArrayOrScalar) -> ArrayOrScalar:
             key_str = "_ary" + _ary_container_key_stringifier(key)
+            if not isinstance(ary, cla.Array | TaggableCLArray | pt.Array):
+                raise TypeError(f"expected one of array_types, got {type(ary)}")
             array_as_dict[key_str] = ary
+            return ary
 
         rec_keyed_map_array_container(_record_leaf_ary_in_dict, array)
 
@@ -566,7 +588,10 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
 
         # }}}
 
-        def _to_frozen(key: tuple[Any, ...], ary) -> TaggableCLArray:
+        def _to_frozen(
+                    key: tuple[SerializationKey, ...],
+                    ary: ArrayOrScalar
+                ) -> ArrayOrScalar:
             key_str = "_ary" + _ary_container_key_stringifier(key)
             return key_to_frozen_subary[key_str]
 
@@ -688,12 +713,6 @@ class PytatoPyOpenCLArrayContext(_BasePytatoArrayContext):
             return ary.tagged(_preprocess_array_tags(tags))
 
         return self._rec_map_container(_tag, array)
-
-    def tag_axis(self, iaxis, tags: ToTagSetConvertible, array):
-        def _tag_axis(ary):
-            return ary.with_tagged_axis(iaxis, tags)
-
-        return self._rec_map_container(_tag_axis, array)
 
     # }}}
 
@@ -820,30 +839,6 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
         import jax.numpy as jnp
         return (jnp.ndarray, )
 
-    def _rec_map_container(
-            self, func: Callable[[Array], Array], array: ArrayOrContainer,
-            allowed_types: tuple[type, ...] | None = None, *,
-            default_scalar: ScalarLike | None = None,
-            strict: bool = False) -> ArrayOrContainer:
-        if allowed_types is None:
-            allowed_types = self.array_types
-
-        def _wrapper(ary):
-            if isinstance(ary, allowed_types):
-                return func(ary)
-            elif np.isscalar(ary):
-                if default_scalar is None:
-                    return ary
-                else:
-                    return np.array(ary).dtype.type(default_scalar)
-            else:
-                raise TypeError(
-                    f"{type(self).__name__}.{func.__name__[1:]} invoked with "
-                    f"an unsupported array type: got '{type(ary).__name__}', "
-                    f"but expected one of {allowed_types}")
-
-        return rec_map_array_container(_wrapper, array)
-
     # {{{ ArrayContext interface
 
     def from_numpy(self, array):
@@ -867,7 +862,8 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
             self._rec_map_container(_to_numpy, self.freeze(array)),
             actx=None)
 
-    def freeze(self, array):
+    @override
+    def freeze(self, array: ArrayOrContainerOrScalarT) -> ArrayOrContainerOrScalarT:
         if np.isscalar(array):
             return array
 
@@ -881,10 +877,11 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
         key_to_frozen_subary: dict[str, jnp.ndarray] = {}
         key_to_pt_arrays: dict[str, pt.Array] = {}
 
-        def _record_leaf_ary_in_dict(key: tuple[Any, ...],
-                                     ary: jnp.ndarray | pt.Array) -> None:
+        def _record_leaf_ary_in_dict(key: tuple[SerializationKey, ...],
+                                     ary: ArrayOrScalar) -> ArrayOrScalar:
             key_str = "_ary" + _ary_container_key_stringifier(key)
-            array_as_dict[key_str] = ary
+            array_as_dict[key_str] = cast("jnp.ndarray", cast("object", ary))
+            return ary
 
         rec_keyed_map_array_container(_record_leaf_ary_in_dict, array)
 
@@ -906,9 +903,12 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
 
         # }}}
 
-        def _to_frozen(key: tuple[Any, ...], ary: pt.Array) -> jnp.ndarray:
+        def _to_frozen(
+                    key: tuple[SerializationKey, ...],
+                    ary: ArrayOrScalar,  # pyright: ignore[reportUnusedParameter]
+                ) -> ArrayOrScalar:
             key_str = "_ary" + _ary_container_key_stringifier(key)
-            return key_to_frozen_subary[key_str]
+            return cast("Array", cast("object", key_to_frozen_subary[key_str]))
 
         if not key_to_pt_arrays:
             # all cl arrays => no need to perform any codegen
@@ -932,8 +932,8 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
             rec_keyed_map_array_container(_to_frozen, array),
             actx=None)
 
-    def thaw(self, array):
-        import jax.numpy as jnp
+    @override
+    def thaw(self, array: ArrayOrContainerOrScalarT) -> ArrayOrContainerOrScalarT:
         import pytato as pt
 
         def _thaw(ary: jnp.ndarray) -> pt.Array:
@@ -947,45 +947,46 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
         from .compile import LazilyJAXCompilingFunctionCaller
         return LazilyJAXCompilingFunctionCaller(self, f)
 
-    def tag(self, tags: ToTagSetConvertible, array):
-        def _tag(ary):
+    @override
+    def tag(self,
+                tags: ToTagSetConvertible,
+                array: ArrayOrContainerT,
+            ) -> ArrayOrContainerT:
+        def _tag(ary: Array) -> Array:
             import jax.numpy as jnp
             if isinstance(ary, jnp.ndarray):
                 return ary
             else:
-                return ary.tagged(_preprocess_array_tags(tags))
+                return cast("pt.Array", ary).tagged(_preprocess_array_tags(tags))
 
         return self._rec_map_container(_tag, array)
-
-    def tag_axis(self, iaxis, tags: ToTagSetConvertible, array):
-        def _tag_axis(ary):
-            import jax.numpy as jnp
-            if isinstance(ary, jnp.ndarray):
-                return ary
-            else:
-                return ary.with_tagged_axis(iaxis, tags)
-
-        return self._rec_map_container(_tag_axis, array)
 
     # }}}
 
     # {{{ compilation
 
-    def call_loopy(self, program, **kwargs):
+    @override
+    def call_loopy(self,
+                   t_unit: TranslationUnit,
+                   **kwargs: Any) -> Mapping[str, Array]:
         raise NotImplementedError(
             "Calling loopy on JAX arrays is not supported. Maybe rewrite"
             " the loopy kernel as numpy-flavored array operations using"
             " ArrayContext.np.")
 
-    def einsum(self, spec, *args, arg_names=None, tagged=()):
+    @override
+    def einsum(self,
+               spec: str, *args: Array,
+               arg_names: tuple[str | None, ...] | None = None,
+               tagged: ToTagSetConvertible = ()) -> Array:
         import pytato as pt
         if arg_names is None:
             arg_names = (None,) * len(args)
 
-        def preprocess_arg(name, arg):
+        def preprocess_arg(name: str | None, arg: Array):
             import jax.numpy as jnp
             if isinstance(arg, jnp.ndarray):
-                ary = self.thaw(arg)
+                ary = cast("pt.Array", cast("object", self.thaw(arg)))
             elif isinstance(arg, pt.Array):
                 ary = arg
             else:
@@ -1006,11 +1007,12 @@ class PytatoJAXArrayContext(_BasePytatoArrayContext):
 
             return ary
 
-        return pt.einsum(spec, *[
+        return cast("pt.Array", pt.einsum(spec, *[
             preprocess_arg(name, arg)
             for name, arg in zip(arg_names, args, strict=True)
-            ]).tagged(_preprocess_array_tags(tagged))
+            ]).tagged(_preprocess_array_tags(tagged)))
 
+    @override
     def clone(self):
         return type(self)()
 

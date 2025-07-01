@@ -1,4 +1,3 @@
-# mypy: disallow-untyped-defs
 from __future__ import annotations
 
 
@@ -8,6 +7,13 @@ __doc__ = """
 .. autofunction:: with_container_arithmetic
 
 .. autoclass:: BcastUntilActxArray
+
+References
+----------
+
+.. class:: TypeT
+
+    A type variable with an upper bound of :class:`type`.
 """
 
 
@@ -37,11 +43,10 @@ THE SOFTWARE.
 
 import enum
 import operator
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partialmethod
 from numbers import Number
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from warnings import warn
 
 import numpy as np
@@ -51,12 +56,23 @@ from arraycontext.container import (
     deserialize_container,
     serialize_container,
 )
-from arraycontext.context import ArrayContext, ArrayOrContainer
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from arraycontext.context import (
+        ArrayContext,
+        ArrayOrContainer,
+        ArrayOrContainerOrScalar,
+    )
 
 
 # {{{ with_container_arithmetic
 
 T = TypeVar("T")
+
+TypeT = TypeVar("TypeT", bound=type)
 
 
 @enum.unique
@@ -186,7 +202,7 @@ def with_container_arithmetic(
             bcast_numpy_array: bool = False,
             _bcast_actx_array_type: bool | None = None,
             bcast_container_types: tuple[type, ...] | None = None,
-        ) -> Callable[[type], type]:
+        ) -> Callable[[TypeT], TypeT]:
     """A class decorator that implements built-in operators for array containers
     by propagating the operations to the elements of the container.
 
@@ -759,11 +775,11 @@ class BcastUntilActxArray:
 
     def _binary_op(self,
                    op: Callable[
-                       [ArrayOrContainer, ArrayOrContainer],
-                       ArrayOrContainer
+                       [ArrayOrContainerOrScalar, ArrayOrContainerOrScalar],
+                       ArrayOrContainerOrScalar
                    ],
-                   right: ArrayOrContainer
-               ) -> ArrayOrContainer:
+                   right: ArrayOrContainerOrScalar
+               ) -> ArrayOrContainerOrScalar:
         try:
             serialized = serialize_container(right)
         except NotAnArrayContainerError:
@@ -778,11 +794,11 @@ class BcastUntilActxArray:
 
     def _rev_binary_op(self,
                    op: Callable[
-                       [ArrayOrContainer, ArrayOrContainer],
-                       ArrayOrContainer
+                       [ArrayOrContainerOrScalar, ArrayOrContainerOrScalar],
+                       ArrayOrContainerOrScalar
                    ],
-                   left: ArrayOrContainer
-               ) -> ArrayOrContainer:
+                   left: ArrayOrContainerOrScalar
+               ) -> ArrayOrContainerOrScalar:
         try:
             serialized = serialize_container(left)
         except NotAnArrayContainerError:
