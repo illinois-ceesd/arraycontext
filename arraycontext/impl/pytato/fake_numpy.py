@@ -107,6 +107,28 @@ class PytatoFakeNumpyNamespace(LoopyBasedFakeNumpyNamespace):
     def zeros(self, shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
         return pt.zeros(shape, dtype)
 
+    def zeros_like(self, ary):
+        def _zeros_like(array):
+            # return self._array_context.np.zeros(
+            #    array.shape, array.dtype).copy(axes=array.axes,
+            #                                   tags=array.tags)
+            return 0*array
+
+        return self._array_context._rec_map_container(
+            _zeros_like, ary, default_scalar=0)
+
+    def ones_like(self, ary):
+        return self.full_like(ary, 1)
+
+    def full_like(self, ary, fill_value):
+        def _full_like(subary):
+            #    return pt.full(subary.shape, fill_value, subary.dtype).copy(
+            #        axes=subary.axes, tags=subary.tags)
+            return fill_value * (0*subary + 1)
+
+        return self._array_context._rec_map_container(
+            _full_like, ary, default_scalar=fill_value)
+
     @override
     def _full_like_array(self,
                 ary: Array,

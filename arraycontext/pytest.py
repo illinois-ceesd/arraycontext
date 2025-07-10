@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 
     from arraycontext.context import ArrayContext
 
-
 # {{{ array context factories
+
 
 class PytestArrayContextFactory:
     @classmethod
@@ -237,6 +237,27 @@ class _PytestPytatoJaxArrayContextFactory(PytestArrayContextFactory):
     @override
     def __str__(self):
         return "<PytatoJAXArrayContext>"
+
+# {{{ _PytestArrayContextFactory
+
+
+class _NumpyArrayContextForTests(NumpyArrayContext):
+    def transform_loopy_program(self, t_unit):
+        return t_unit
+
+
+class _PytestNumpyArrayContextFactory(PytestArrayContextFactory):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def __call__(self):
+        return _NumpyArrayContextForTests()
+
+    def __str__(self):
+        return "<NumpyArrayContext>"
+
+# }}}
+
 
 
 # {{{ _PytestArrayContextFactory
